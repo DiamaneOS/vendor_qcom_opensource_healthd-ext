@@ -93,6 +93,9 @@ int main(int argc, char** argv) {
     auto config = std::make_unique<healthd_config>();
     qti_healthd_board_init(config.get());
     ::android::hardware::health::InitHealthdConfig(config.get());
+    // DiamaneOS: the FP6 kernel has the state of health here, not under power_supply. Set after
+    // InitHealthdConfig(), which resets the config.
+    config->batteryStateOfHealthPath = android::String8("/sys/class/qcom-battery/soh");
     auto binder = ndk::SharedRefBase::make<Health>(gInstanceName, std::move(config));
 
     if (argc >= 2 && argv[1] == gChargerArg) {
