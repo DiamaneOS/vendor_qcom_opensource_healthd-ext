@@ -11,16 +11,19 @@
 #include <unistd.h>
 
 #include <android-base/logging.h>
+#include <android-base/properties.h>
 #include <android-base/unique_fd.h>
 
 namespace aidl::android::hardware::health {
 
 namespace {
 constexpr const char* kChargeDisablePath = "/sys/class/qcom-battery/charge_disable";
+// "off", "on" or "paused". init pauses charging from it early in boot (device boot/init.qcom.rc).
+constexpr const char* kStateProperty = "persist.vendor.charge_limit";
 }  // namespace
 
-bool ShouldPauseCharging(BatteryChargingPolicy policy, bool plugged, int level, bool paused) {
-    if (policy != BatteryChargingPolicy::LONG_LIFE || !plugged) return false;
+bool ShouldPauseCharging(BatteryChargingPolicy policy, int level, bool paused) {
+    if (policy != BatteryChargingPolicy::LONG_LIFE) return false;
     if (level >= kChargeLimitStop) return true;
     if (level <= kChargeLimitResume) return false;
     return paused;
@@ -29,8 +32,10 @@ bool ShouldPauseCharging(BatteryChargingPolicy policy, bool plugged, int level, 
 ChargeLimitHealth::ChargeLimitHealth(std::string_view instance_name,
                                      std::unique_ptr<healthd_config>&& config)
     : Health(instance_name, std::move(config)) {
-    // A previous instance may have left charging paused.
-    WritePause(false);
+    // Go on from the last boot or the last instance until the framework sets the policy.
+    saved_state_ = ::android::base::GetProperty(kStateProperty, "off");
+    if (saved_state_ != "off") policy_ = BatteryChargingPolicy::LONG_LIFE;
+    WritePause(saved_state_ == "paused");
 }
 
 ndk::ScopedAStatus ChargeLimitHealth::setChargingPolicy(BatteryChargingPolicy in_value) {
@@ -41,6 +46,7 @@ ndk::ScopedAStatus ChargeLimitHealth::setChargingPolicy(BatteryChargingPolicy in
     if (in_value != policy_) {
         LOG(INFO) << "Charging policy " << toString(in_value);
         policy_ = in_value;
+        SaveState();
     }
     // Apply it now and report it to the framework.
     return update();
@@ -52,13 +58,13 @@ ndk::ScopedAStatus ChargeLimitHealth::getChargingPolicy(BatteryChargingPolicy* o
 }
 
 void ChargeLimitHealth::UpdateHealthInfo(HealthInfo* info) {
-    bool plugged = info->chargerAcOnline || info->chargerUsbOnline ||
-                   info->chargerWirelessOnline || info->chargerDockOnline;
-    bool pause = ShouldPauseCharging(policy_, plugged, info->batteryLevel, paused_.value_or(false));
+    bool pause = ShouldPauseCharging(policy_, info->batteryLevel, paused_.value_or(false));
     if (paused_ != pause) WritePause(pause);
 
     info->chargingPolicy = policy_;
-    if (paused_.value_or(false)) {
+    bool plugged = info->chargerAcOnline || info->chargerUsbOnline ||
+                   info->chargerWirelessOnline || info->chargerDockOnline;
+    if (plugged && paused_.value_or(false)) {
         // Plugged in and held: Android shows "Charging on hold to protect battery".
         info->chargingState = BatteryChargingState::LONG_LIFE;
         info->batteryStatus = BatteryStatus::NOT_CHARGING;
@@ -73,12 +79,26 @@ void ChargeLimitHealth::WritePause(bool pause) {
     if (fd.ok() && TEMP_FAILURE_RETRY(write(fd.get(), pause ? "1" : "0", 1)) == 1) {
         paused_ = pause;
         write_failed_ = false;
+        SaveState();
         return;
     }
     // Retried at the next update. Log once until a write works again.
     if (!write_failed_) PLOG(ERROR) << "Cannot write " << kChargeDisablePath;
     write_failed_ = true;
     paused_.reset();
+}
+
+void ChargeLimitHealth::SaveState() {
+    if (!paused_.has_value()) return;
+    std::string state = policy_ != BatteryChargingPolicy::LONG_LIFE ? "off"
+                        : *paused_                                 ? "paused"
+                                                                   : "on";
+    if (state == saved_state_) return;
+    if (::android::base::SetProperty(kStateProperty, state)) {
+        saved_state_ = state;
+    } else {
+        LOG(ERROR) << "Cannot set " << kStateProperty;
+    }
 }
 
 }  // namespace aidl::android::hardware::health
