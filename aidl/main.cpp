@@ -15,6 +15,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifndef __ANDROID_RECOVERY__
+#include "charge_limit.h"
+#endif
+
 using aidl::android::hardware::health::HalHealthLoop;
 using aidl::android::hardware::health::Health;
 
@@ -96,9 +100,17 @@ int main(int argc, char** argv) {
     // DiamaneOS: the FP6 kernel has the state of health here, not under power_supply. Set after
     // InitHealthdConfig(), which resets the config.
     config->batteryStateOfHealthPath = android::String8("/sys/class/qcom-battery/soh");
-    auto binder = ndk::SharedRefBase::make<Health>(gInstanceName, std::move(config));
+    bool charger_mode = argc >= 2 && argv[1] == gChargerArg;
+    std::shared_ptr<Health> binder;
+#ifndef __ANDROID_RECOVERY__
+    // DiamaneOS: the charge limit, while Android runs. Off-mode charging charges fully.
+    if (!charger_mode)
+        binder = ndk::SharedRefBase::make<aidl::android::hardware::health::ChargeLimitHealth>(
+                gInstanceName, std::move(config));
+#endif
+    if (!binder) binder = ndk::SharedRefBase::make<Health>(gInstanceName, std::move(config));
 
-    if (argc >= 2 && argv[1] == gChargerArg) {
+    if (charger_mode) {
 #if !CHARGER_FORCE_NO_UI
         KLOG_INFO(LOG_TAG, "Starting charger mode with UI.");
         auto charger_callback = std::make_shared<aidl::android::hardware::health::ChargerCallbackImpl>(binder);

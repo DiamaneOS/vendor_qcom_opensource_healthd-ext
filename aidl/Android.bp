@@ -34,6 +34,7 @@ cc_binary {
     recovery: false,
     vendor: true,
     defaults: ["android.hardware.health-service.qti-defaults"],
+    srcs: ["charge_limit.cpp"],
     init_rc: ["android.hardware.health-service.qti.rc"],
     overrides: ["charger"],
 }
