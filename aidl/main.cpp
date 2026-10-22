@@ -102,13 +102,16 @@ int main(int argc, char** argv) {
     config->batteryStateOfHealthPath = android::String8("/sys/class/qcom-battery/soh");
     bool charger_mode = argc >= 2 && argv[1] == gChargerArg;
     std::shared_ptr<Health> binder;
-#ifndef __ANDROID_RECOVERY__
-    // DiamaneOS: the charge limit, while Android runs. Off-mode charging charges fully.
-    if (!charger_mode)
-        binder = ndk::SharedRefBase::make<aidl::android::hardware::health::ChargeLimitHealth>(
-                gInstanceName, std::move(config));
+#ifdef __ANDROID_RECOVERY__
+    // DiamaneOS: recovery has no charge limit and charges fully.
+    binder = ndk::SharedRefBase::make<Health>(gInstanceName, std::move(config));
+#else
+    // DiamaneOS: the charge limit. Off-mode charging has no framework and no /data. It follows
+    // the copy of the user's choice that init keeps (device boot/init.qcom.rc).
+    const char* choice_path = charger_mode ? "/metadata/vendor_charge_limit/enabled" : nullptr;
+    binder = ndk::SharedRefBase::make<aidl::android::hardware::health::ChargeLimitHealth>(
+            gInstanceName, std::move(config), choice_path);
 #endif
-    if (!binder) binder = ndk::SharedRefBase::make<Health>(gInstanceName, std::move(config));
 
     if (charger_mode) {
 #if !CHARGER_FORCE_NO_UI

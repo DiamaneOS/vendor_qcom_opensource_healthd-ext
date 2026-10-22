@@ -31,4 +31,13 @@ TEST(ChargeLimitTest, RepeatsAPauseTheFirmwareLost) {
     EXPECT_FALSE(ShouldRepeatPause(std::nullopt, false, true));
 }
 
+TEST(ChargeLimitTest, ReadsTheCopyOfTheChoice) {
+    EXPECT_TRUE(LimitChosen("1"));
+    // Off, missing, empty or anything else charges fully.
+    EXPECT_FALSE(LimitChosen("0"));
+    EXPECT_FALSE(LimitChosen(""));
+    EXPECT_FALSE(LimitChosen("1\n"));
+    EXPECT_FALSE(LimitChosen("11"));
+}
+
 }  // namespace aidl::android::hardware::health

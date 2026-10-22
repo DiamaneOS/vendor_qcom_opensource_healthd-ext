@@ -7,6 +7,7 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include <health-impl/Health.h>
 
@@ -26,10 +27,17 @@ bool ShouldPauseCharging(BatteryChargingPolicy policy, int level, bool paused);
 // |was_charging|), whatever the node reads.
 bool ShouldRepeatPause(std::optional<bool> firmware_paused, bool charging, bool was_charging);
 
+// Whether the copy of the user's choice holds the limit. init writes "1" or "0".
+bool LimitChosen(std::string_view copy);
+
 // Runs on the health loop thread only: binder calls are polled on the same loop.
 class ChargeLimitHealth : public Health {
   public:
-    ChargeLimitHealth(std::string_view instance_name, std::unique_ptr<healthd_config>&& config);
+    // While Android runs |choice_path| is null. The framework then sets the policy and the
+    // service keeps its state in persist.vendor.charge_limit. Off-mode charging passes the copy
+    // of the user's choice instead. There the service only pauses and resumes.
+    ChargeLimitHealth(std::string_view instance_name, std::unique_ptr<healthd_config>&& config,
+                      const char* choice_path = nullptr);
 
     ndk::ScopedAStatus setChargingPolicy(BatteryChargingPolicy in_value) override;
     ndk::ScopedAStatus getChargingPolicy(BatteryChargingPolicy* out) override;
@@ -43,6 +51,8 @@ class ChargeLimitHealth : public Health {
     void WritePause(bool pause);
     void SaveState();
 
+    // Whether the state is kept in persist.vendor.charge_limit, while Android runs.
+    const bool keep_state_;
     BatteryChargingPolicy policy_ = BatteryChargingPolicy::DEFAULT;
     // What charge_disable holds. Unknown until a write succeeds, and again when the firmware
     // dropped a pause.

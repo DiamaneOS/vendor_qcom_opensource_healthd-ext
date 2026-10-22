@@ -34,12 +34,38 @@ bool ShouldRepeatPause(std::optional<bool> firmware_paused, bool charging, bool 
     return charging && !was_charging;
 }
 
+bool LimitChosen(std::string_view copy) {
+    return copy == "1";
+}
+
+namespace {
+// Empty when the copy is missing or cannot be read.
+std::string ReadChoice(const char* path) {
+    ::android::base::unique_fd fd(
+            TEMP_FAILURE_RETRY(open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)));
+    char buf[2];
+    ssize_t n = fd.ok() ? TEMP_FAILURE_RETRY(read(fd.get(), buf, sizeof(buf))) : -1;
+    return n > 0 ? std::string(buf, n) : std::string();
+}
+}  // namespace
+
 ChargeLimitHealth::ChargeLimitHealth(std::string_view instance_name,
-                                     std::unique_ptr<healthd_config>&& config)
-    : Health(instance_name, std::move(config)) {
-    // Go on from the last boot or the last instance until the framework sets the policy.
-    saved_state_ = ::android::base::GetProperty(kStateProperty, "off");
-    if (saved_state_ != "off") policy_ = BatteryChargingPolicy::LONG_LIFE;
+                                     std::unique_ptr<healthd_config>&& config,
+                                     const char* choice_path)
+    : Health(instance_name, std::move(config)), keep_state_(choice_path == nullptr) {
+    if (!keep_state_) {
+        // Anything but the limit chosen charges fully. The first update pauses or resumes.
+        if (LimitChosen(ReadChoice(choice_path))) policy_ = BatteryChargingPolicy::LONG_LIFE;
+        LOG(INFO) << "Charging policy " << toString(policy_) << " from " << choice_path;
+        return;
+    }
+    // Go on from the last boot or the last instance until the framework sets the policy. Without
+    // a state, as after a reset of /data alone, the first write sets "off", so init's copy of the
+    // choice follows.
+    saved_state_ = ::android::base::GetProperty(kStateProperty, "");
+    if (saved_state_ == "on" || saved_state_ == "paused") {
+        policy_ = BatteryChargingPolicy::LONG_LIFE;
+    }
     WritePause(saved_state_ == "paused");
 }
 
@@ -127,7 +153,7 @@ void ChargeLimitHealth::WritePause(bool pause) {
 }
 
 void ChargeLimitHealth::SaveState() {
-    if (!paused_.has_value()) return;
+    if (!keep_state_ || !paused_.has_value()) return;
     std::string state = policy_ != BatteryChargingPolicy::LONG_LIFE ? "off"
                         : *paused_                                 ? "paused"
                                                                    : "on";
