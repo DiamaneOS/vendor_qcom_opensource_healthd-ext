@@ -39,6 +39,21 @@ cc_binary {
     overrides: ["charger"],
 }
 
+cc_test {
+    name: "android.hardware.health-service.qti_charge_limit_test",
+    vendor: true,
+    defaults: ["libhealth_aidl_impl_user"],
+    static_libs: ["libhealth_aidl_impl"],
+    srcs: [
+        "charge_limit.cpp",
+        "charge_limit_test.cpp",
+    ],
+    cflags: [
+        "-Wall",
+        "-Werror",
+    ],
+}
+
 cc_binary {
     name: "android.hardware.health-service.qti_recovery",
     vendor: false,

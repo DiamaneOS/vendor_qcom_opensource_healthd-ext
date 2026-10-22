@@ -29,6 +29,11 @@ bool ShouldPauseCharging(BatteryChargingPolicy policy, int level, bool paused) {
     return paused;
 }
 
+bool ShouldRepeatPause(std::optional<bool> firmware_paused, bool charging, bool was_charging) {
+    if (!firmware_paused.value_or(true)) return true;
+    return charging && !was_charging;
+}
+
 ChargeLimitHealth::ChargeLimitHealth(std::string_view instance_name,
                                      std::unique_ptr<healthd_config>&& config)
     : Health(instance_name, std::move(config)) {
@@ -59,12 +64,27 @@ ndk::ScopedAStatus ChargeLimitHealth::getChargingPolicy(BatteryChargingPolicy* o
 
 void ChargeLimitHealth::UpdateHealthInfo(HealthInfo* info) {
     bool pause = ShouldPauseCharging(policy_, info->batteryLevel, paused_.value_or(false));
+    // The kernel status is what the charger firmware does. The firmware can drop a pause.
+    bool charging = info->batteryStatus == BatteryStatus::CHARGING;
+    if (pause && paused_ == true) {
+        std::optional<bool> firmware_paused = read_back_ ? ReadPause() : std::nullopt;
+        if (ShouldRepeatPause(firmware_paused, charging, charging_while_paused_)) {
+            LOG(WARNING) << "Charger firmware dropped the charge limit pause, pausing again";
+            // A firmware that still reads 1 may ignore the same value again.
+            if (firmware_paused != false) WriteNode(false);
+            paused_.reset();
+        }
+    }
+    // Set on the update that starts a pause too, so charging that has not stopped yet there does
+    // not count as dropped.
+    charging_while_paused_ = pause && charging;
     if (paused_ != pause) WritePause(pause);
 
     info->chargingPolicy = policy_;
     bool plugged = info->chargerAcOnline || info->chargerUsbOnline ||
                    info->chargerWirelessOnline || info->chargerDockOnline;
-    if (plugged && paused_.value_or(false)) {
+    // Android shows charging that goes on during a pause.
+    if (plugged && paused_.value_or(false) && !charging) {
         // Plugged in and held: Android shows "Charging on hold to protect battery".
         info->chargingState = BatteryChargingState::LONG_LIFE;
         info->batteryStatus = BatteryStatus::NOT_CHARGING;
@@ -73,12 +93,30 @@ void ChargeLimitHealth::UpdateHealthInfo(HealthInfo* info) {
     }
 }
 
-void ChargeLimitHealth::WritePause(bool pause) {
+std::optional<bool> ChargeLimitHealth::ReadPause() {
+    // The kernel reads it from the charger firmware.
+    ::android::base::unique_fd fd(
+            TEMP_FAILURE_RETRY(open(kChargeDisablePath, O_RDONLY | O_CLOEXEC)));
+    char value;
+    if (!fd.ok() || TEMP_FAILURE_RETRY(read(fd.get(), &value, 1)) != 1) return std::nullopt;
+    if (value == '1') return true;
+    if (value == '0') return false;
+    return std::nullopt;
+}
+
+bool ChargeLimitHealth::WriteNode(bool pause) {
     ::android::base::unique_fd fd(
             TEMP_FAILURE_RETRY(open(kChargeDisablePath, O_WRONLY | O_CLOEXEC)));
-    if (fd.ok() && TEMP_FAILURE_RETRY(write(fd.get(), pause ? "1" : "0", 1)) == 1) {
+    return fd.ok() && TEMP_FAILURE_RETRY(write(fd.get(), pause ? "1" : "0", 1)) == 1;
+}
+
+void ChargeLimitHealth::WritePause(bool pause) {
+    if (WriteNode(pause)) {
         paused_ = pause;
         write_failed_ = false;
+        // Until the next write, the node is read only if it reads back this value. Otherwise a
+        // firmware that reports something else would make the service write at every update.
+        read_back_ = ReadPause() == pause;
         SaveState();
         return;
     }
