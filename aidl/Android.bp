@@ -23,6 +23,11 @@ cc_defaults {
         "main.cpp",
     ],
 
+    sanitize: {
+        integer_overflow: true,
+        misc_undefined: ["bounds"],
+    },
+
     cflags: [
         "-Wall",
         "-Werror",
@@ -34,6 +39,9 @@ cc_binary {
     recovery: false,
     vendor: true,
     defaults: ["android.hardware.health-service.qti-defaults"],
+    sanitize: {
+        cfi: true,
+    },
     srcs: ["charge_limit.cpp"],
     init_rc: ["android.hardware.health-service.qti.rc"],
     overrides: ["charger"],
@@ -48,6 +56,10 @@ cc_test {
         "charge_limit.cpp",
         "charge_limit_test.cpp",
     ],
+    sanitize: {
+        integer_overflow: true,
+        misc_undefined: ["bounds"],
+    },
     cflags: [
         "-Wall",
         "-Werror",
